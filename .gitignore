@@ -1,7 +1,13 @@
 __pycache__
 .ipynb_checkpoints
-clip_test.ipynb_checkpoints
+clip_test.ipynb
 CLIP.jpg
 run_dataset_generation.sh
+run_dataloader.sh
 run.sh
 vocab.json
+src_trash
+image_dataset
+result
+clip_test.ipynb
+Untitled.ipynb
