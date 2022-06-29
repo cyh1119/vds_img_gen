@@ -61,7 +61,7 @@ class MaskedCrossAttention(nn.Module):
         attn = torch.tensor([], device=self.device, requires_grad=True)
 
         for query, key, value in zip(q, k, v):
-            attn_val = torch.matmul(query, key.T) + mask * 1e9
+            attn_val = torch.matmul(query, key.T) + mask * -1e9
             attn_val = attn_val.softmax(dim=-1)
             attn_val = torch.matmul(attn_val, value)
             attn = torch.cat([attn, attn_val], dim=1)
@@ -191,12 +191,13 @@ class GenDial(nn.Module):
 
         prediction = torch.tensor([], device=self.device, requires_grad=True)
 
+        # predict next words
         for iteration in range(response_tokens.shape[-1]):
             image_text_feature = self.cross_attn(text_embeddings, image_embeddings, mask)
             
-            output = self.lm(inputs_embeds = image_text_feature)
+            output = self.lm(inputs_embeds = image_text_feature).logits
             
-            prob = torch.softmax(output[0][-1], dim=-1)
+            prob = torch.softmax(output[-1], dim=-1)
             prediction = torch.cat([prediction, prob], dim=0)
             # extend text embeddings for next iteration
             new_token = [torch.tensor(response_tokens[iteration], device=self.device).unsqueeze(0).unsqueeze(0)]

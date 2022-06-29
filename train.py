@@ -40,43 +40,23 @@ def train(dataloader, model, optimizer):
 
         used_time = time.time()-start_time
         if batch % 1 == 0:
-            loss, current = loss.item(), batch * len(data)
+            loss, current = loss, batch * len(batch_data)
             print(f"loss: {loss:>7f}  [{current:>5d}/{size:>5d}], used time: {used_time:>7f} sec")
-    return loss.item()
+    return loss
 
 device="cuda" if torch.cuda.is_available() else "cpu"
-'''
-def test(dataloader, model, loss_fn):
-    size = len(dataloader.dataset)
-    model.eval()
 
-    test_loss = 0
-    with torch.no_grad():
-        for batch, data in enumerate(dataloader):
-            # prediction
-            _, prob_gold = model(data['images'], data['history'], data['response'])
-            # 손실함수 고치기
-            loss = loss_fn(prob_gold)
-            test_loss = loss.item()
-        
-        print("Test Loss: {}".format(test_loss/size))
-
-    return test_loss
-'''
-'''
-with open('./vocab.json','r') as f:
-    vocab = json.load(f)
-vocab = {v:k for k,v in vocab.items()}
-'''
 first = 0
 last = 33000
 train_data = dataloader.PersonaChat_with_Images(split='train', image_path='./image_dataset', init=first, end=last)
 train_data = Subset(train_data, torch.arange(first,last).tolist())
 train_dataloader = DataLoader(train_data, batch_size=8, shuffle=True, collate_fn=dataloader.collate_fn)
 
-model = model.GenDial(device).to(device)
+model = model.GenDial(device)
+model.load_state_dict(torch.load("./model_checkpoint/model_0.pt")['model_state_dict'])
+model = model.to(device)
 
-num_epoch = 1
+num_epoch = 4
 lr = 0.001
 optimizer = torch.optim.SGD(model.parameters(), lr=lr)
 writer = SummaryWriter()
