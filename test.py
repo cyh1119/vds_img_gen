@@ -1,7 +1,6 @@
 import torch
 import model
 import dataloader
-import json
 from torch.utils.data import DataLoader, Subset
 
 def test(dataloader, model, loss_fn):
@@ -35,20 +34,16 @@ train_data = dataloader.PersonaChat_with_Images(split='train', image_path='./ima
 train_data = Subset(train_data, torch.arange(first,last).tolist())
 train_dataloader = DataLoader(train_data, batch_size=8, shuffle=True, collate_fn=dataloader.collate_fn)
 
-data = train_data[0]
+data = train_data[3]
 
 prediction, response_token = model(data)
 
 prediction = prediction.reshape(-1, 50257)
 prediction_idx = torch.argmax(prediction, dim=-1)
 
-with open('./vocab.json','r') as f:
-    vocab = json.load(f)
-vocab = {v:k for k,v in vocab.items()}
-
-output = []
-for idx in prediction_idx:
-    output.append(vocab[idx.item()])
-
+from transformers import GPT2Tokenizer
+tokenizer = GPT2Tokenizer.from_pretrained('gpt2', bos_token="<|image|>")
+output = tokenizer.decode(prediction_idx)
+print(data['history'])
 print(output)
 print(data['response'])

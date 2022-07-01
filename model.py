@@ -2,7 +2,6 @@ from transformers import GPT2Tokenizer, GPT2LMHeadModel
 import torch
 import clip
 from PIL import Image
-import torch
 from torch import nn
 
 features = {}
@@ -13,7 +12,6 @@ def get_features(name):
     return hook
 
 class FeedForward(nn.Module):
-    
     def __init__(self, dim, mult=4):
         super().__init__()
         inner_dim = dim * mult
@@ -39,9 +37,9 @@ class MaskedCrossAttention(nn.Module):
         inner_dim = dim_head * heads
 
         self.norm = nn.LayerNorm(dim)
-
         self.to_q = nn.Linear(dim, inner_dim, bias = False)
-        self.to_kv = nn.Linear(dim, inner_dim * 2, bias = False)
+        self.to_k = nn.Linear(dim, inner_dim, bias = False)
+        self.to_v = nn.Linear(dim, inner_dim, bias = False)
         self.to_out = nn.Linear(inner_dim, dim, bias = False)
 
     def forward(self, x, y, mask):
@@ -53,7 +51,8 @@ class MaskedCrossAttention(nn.Module):
         output: [num_sentence * max_words, dimension])
         '''
         q = self.to_q(x)*self.scale
-        k, v = self.to_kv(y).chunk(2, dim = -1)
+        k = self.to_k(y)
+        v = self.to_v(y)
         q = torch.split(q, self.dim_head, dim=1)
         k = torch.split(k, self.dim_head, dim=1)
         v = torch.split(v, self.dim_head, dim=1)
@@ -74,24 +73,28 @@ class GatedCrossAttentionBlock(nn.Module):
     def __init__(self, dim, dim_head, heads, ffw_mult):
         super().__init__()
         self.mca = MaskedCrossAttention(dim, dim_head, heads)
-        self.mca_gate = nn.Parameter(torch.tensor([0.]), requires_grad=True)
+        self.mca_gate = nn.Parameter(torch.tensor([0.]))
         self.ffw = FeedForward(dim, ffw_mult)
-        self.ffw_gate = nn.Parameter(torch.tensor([0.]), requires_grad=True)
+        self.ffw_gate = nn.Parameter(torch.tensor([0.]))
 
     def forward(self, x, y, mask): # x: text_embeddings, y: image_embeddings
         x = x + self.mca(x, y, mask) * self.mca_gate.tanh()
         x = x + self.ffw(x) * self.ffw_gate.tanh()
+        print(self.ffw_gate.grad)
         return x
 
 class encoder():
-    def __init__(self, device):
+    def __init__(self, wte, device):
         self.device=device
         self.clip_model, self.clip_preprocess = clip.load("ViT-B/32", device=self.device)
         self.tokenizer = GPT2Tokenizer.from_pretrained('gpt2', bos_token="<|image|>")
         for clip_params in self.clip_model.parameters():
             clip_params.requires_grad = False
-
-        # 현재 디렉토리에 vocab 파일 없으면 생성하기
+        self.wte = wte
+        self.image_token_embedding = nn.Embedding(1, wte.weight.shape[-1], device=self.device)
+        # train only image token embedding
+        self.wte.requires_grad_(False)
+        self.image_token_embedding.requires_grad_(True)
 
     def encoding_image(self, image_path_list):  # output: [num_images, num_patches+1, dimension]
         output = torch.Tensor([]).to(self.device)
@@ -104,7 +107,6 @@ class encoder():
             feature = features['feats'].permute(1,0,2)
             feature = feature.float()
             output = torch.cat([output, feature], dim=-2)
-
         return output.squeeze(0)
 
     def tokenize_text(self, texts): # output: list of text tokens
@@ -115,51 +117,32 @@ class encoder():
             tokens.append(input_ids)
         return tokens
 
-    def encoding_text(self, text_tokens, wte): # input: list of text tokens, output: tensor of text embeddings
-        image_token_embedding = nn.Embedding(1, wte.weight.shape[-1], device=self.device)
-        
-        # train only image token embedding
-        wte.requires_grad_(False)
-        image_token_embedding.requires_grad_(True)
-
-        text_embeddings = torch.Tensor([]).to(self.device)
+    def encoding_text(self, text_tokens, ): # input: list of text tokens, output: tensor of text embeddings
+        text_embeddings = torch.tensor([],device=self.device, requires_grad=True)
 
         # *image token is always at the first of the sentence
         for text_token in text_tokens:
-            if text_token[0][0] == wte.weight.shape[0]:
-                image_token_embed = image_token_embedding(torch.tensor([0]).to(self.device))
+            if text_token[0][0] == self.wte.weight.shape[0]:
+                image_token_embed = self.image_token_embedding(torch.tensor([0], device=self.device))
                 text_embeddings = torch.cat([image_token_embed, text_embeddings], dim=0)
                 text_token = text_token[0][1:]
                 text_token = torch.tensor(text_token, device=self.device)
-            text_embeddings = torch.cat([text_embeddings, wte(text_token)], dim=-2)
+            text_embeddings = torch.cat([text_embeddings, self.wte(text_token)], dim=-2)
 
         return text_embeddings
-'''
-class decoder():
-    def __init__(self, vocab):
-        self.vocab = vocab
 
-    def decode(self, word_probs):
-        words = []
-    
-        for word_prob in word_probs:
-            word_index = torch.argmax(word_prob)
-            words.append(self.vocab[word_index.item()])
-
-        return words
-'''
 class GenDial(nn.Module):
     def __init__(self, device):
         super().__init__()
         self.device=device
-        self.encoder = encoder(self.device)
-        self.cross_attn = GatedCrossAttentionBlock(dim = 768, dim_head = 64, heads = 8, ffw_mult=4).to(self.device)
         self.lm = GPT2LMHeadModel.from_pretrained('gpt2').to(self.device)
+        self.wte = self.lm.transformer.wte
+        self.encoder = encoder(self.wte, self.device)
+        self.cross_attn = GatedCrossAttentionBlock(dim = 768, dim_head = 64, heads = 8, ffw_mult=4).to(self.device)
+
         for param in self.lm.parameters():
             param.requires_grad=False
         
-        self.wte = self.lm.transformer.wte
-
     def create_mask_per_text(self, num_text, num_words, num_preceding_image, num_embedds):
         mask = torch.ones((num_words, num_text * num_embedds))
         mask[:, :num_preceding_image * num_embedds] = 0
@@ -180,7 +163,7 @@ class GenDial(nn.Module):
         
         # encode image and text
         image_embeddings = self.encoder.encoding_image(image_path)
-        text_embeddings = self.encoder.encoding_text(text_tokens, self.wte)
+        text_embeddings = self.encoder.encoding_text(text_tokens)
 
         # create mask matrix
         mask = torch.Tensor([]).to(self.device)
@@ -197,11 +180,10 @@ class GenDial(nn.Module):
             
             output = self.lm(inputs_embeds = image_text_feature).logits
             
-            prob = torch.softmax(output[-1], dim=-1)
+            prob = torch.softmax(output[-1], dim=-1).unsqueeze(0)
             prediction = torch.cat([prediction, prob], dim=0)
-            # extend text embeddings for next iteration
             new_token = [torch.tensor(response_tokens[iteration], device=self.device).unsqueeze(0).unsqueeze(0)]
-            new_token_embedding = self.encoder.encoding_text(new_token, self.wte).squeeze(0)
+            new_token_embedding = self.encoder.encoding_text(new_token).squeeze(0)
             text_embeddings = torch.cat([text_embeddings, new_token_embedding], dim=0)
 
             # modify mask matrix

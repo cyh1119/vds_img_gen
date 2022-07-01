@@ -15,3 +15,4 @@ run
 runs
 run_dataset_generation
 model_checkpoint
+torchviz_example.ipynb
